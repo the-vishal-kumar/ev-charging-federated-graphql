@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: CI only needs to read the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Format, lint & type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the node:18-slim images and the "engines" field.
+          node-version: 18
+          cache: npm
+
+      - run: npm ci
+
+      - name: Prettier
+        run: npm run pretty:check
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Type-check gateway
+        working-directory: src/gateway
+        run: npx --no-install tsc --noEmit
+
+      - name: Type-check socket subgraph
+        working-directory: src/subgraphs/socket
+        run: npx --no-install tsc --noEmit
+
+  test:
+    name: Unit & end-to-end tests
+    runs-on: ubuntu-latest
+    needs: lint
+    env:
+      COMPOSE: docker compose -f docker-compose.test.yml --env-file .env.test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+
+      - run: npm ci
+
+      # Same stack as `npm test`: seeded MongoDB, socket subgraph and gateway,
+      # each built from its own Dockerfile. No Open Charge Map key is needed;
+      # e2e tests read the seed data through the gateway on :5000.
+      - name: Start test stack
+        run: $COMPOSE up --build -d
+
+      - name: Wait for the gateway
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS -o /dev/null -X POST -H 'Content-Type: application/json' \
+                 --data '{"query":"{__typename}"}' http://localhost:5000; then
+              echo "Gateway ready after ${i} attempt(s)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Gateway did not become ready"
+          exit 1
+
+      - name: Jest with coverage
+        run: npx --no-install jest --coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          if-no-files-found: ignore
+
+      - name: Service logs on failure
+        if: failure()
+        run: $COMPOSE logs --no-color
+
+      - name: Stop test stack
+        if: always()
+        run: $COMPOSE down -v
