@@ -1,34 +1,94 @@
-# nodejs-typescript-federated-graphql-boilerplate
+# EV Charging Federated GraphQL
 
-A [NodeJs] / [TypeScript] application boilerplate with Federated 2 [GraphQL].
+[![CI](https://github.com/the-vishal-kumar/nodejs-typescript-federated-graphql-boilerplate/actions/workflows/ci.yml/badge.svg)](./.github/workflows/ci.yml)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](./LICENSE)
 
--   It contains a mechanism to pull all the data from an unpaginated [Open Charge Map API].
--   It uses [MongoDB] as a persistent database layer with [Mongoose] as an ODM.
--   The data is then queryable through [GraphQL] in [relay-style pagination].
--   It can be run with [Docker] and [Docker-Compose] containerization software.
--   It has some end-to-end and unit tests written using [Jest].
--   It uses [ESLint], [Prettier], [CommitLint], and [Husky] for maintaining code quality.
--   It uses [Winston] for logging.
--   It uses [New Relic] for error logging, application performance monitoring, and log monitoring.
+An ingestion service and a federated GraphQL API for EV charging stations. It
+pre-fetches station data from the [Open Charge Map API], writes a change only
+when the upstream record has changed, and serves the result through an Apollo
+Federation 2 gateway with relay-style pagination. It is built in [NodeJs] and
+[TypeScript] without a web framework, and each service has its own Docker image.
 
-## Problem Statement
+## Problem
 
--   Create an application that pulls current charging station data from [Open Charge Map API] and then persists the data in [MongoDB].
-    -   The following fields are to be imported from [Open Charge Map API]:
-        -   operatorInfo
-        -   statusType
-        -   addressInfo
-        -   connections
--   The service pulls the data and updates our own database. It shall update the database only in case of changes in the pulled data.
+- **Pull** current charging-station data (`operatorInfo`, `statusType`,
+  `addressInfo`, `connections`) from the [Open Charge Map API] and persist it
+  in [MongoDB].
+- **Write only on change.** A re-import must not rewrite unchanged records.
+- Use **UUID v4** identifiers rather than relying only on Mongo ObjectIds.
+- Expose the data through **[Federated GraphQL]** (a gateway plus subgraphs),
+  with **[relay-style pagination]**.
+- Give every service its own Docker image (it targets Kubernetes), run the
+  whole system locally with one command, and use no Node.js framework.
 
-    [Read more...](./PROBLEM.md)
+The catch: the Open Charge Map `poi` endpoint **has no pagination**. It caps
+results per call (`maxresults`) and filters only by country, polygon or
+bounding box. So "import everything" has to be designed, not just called.
 
-## Solution
+Full statement: [PROBLEM.md](./PROBLEM.md).
 
--   There is one entity - Socket. It represents charging stations in our database.
--   There are two graphql queries - Socket and Sockets.
+## Design
 
-    [Read more...](./SOLUTION.md)
+```mermaid
+flowchart LR
+    client[GraphQL client] -->|query socket / sockets| gw
+
+    subgraph compose [docker compose: one command]
+        gw[Gateway<br/>Apollo Gateway<br/>IntrospectAndCompose] -->|federated query| sg
+        sg[Socket subgraph<br/>@apollo/subgraph<br/>resolvers + cron] -->|Mongoose| db[(MongoDB<br/>sockets)]
+    end
+
+    cron([node-cron<br/>on start + daily 00:01]) --> sg
+    sg -->|per sub-box request<br/>boundingbox + countrycode| ocm[Open Charge Map API]
+
+    cow[cow.txt<br/>country extents] -->|generateCountriesJson| boxes[country bounding boxes]
+    boxes -->|generateSubBoundingBoxesOfCountry<br/>cells of at most 1° × 1°| sg
+```
+
+**Ingestion (socket subgraph, `cron/pullSocket.ts`)**
+
+1. Country extents come from the public *Countries of the World* dataset
+   (`cow.txt`), which is parsed once into `countries.json` with each country's
+   top-left and bottom-right corner.
+2. Each enabled country (currently `DE` and `IN`) is split into a grid of
+   sub-boxes of at most 1 square degree, which is roughly 70–110 km a side at
+   these latitudes. (Comments in the code say "km²", but the arithmetic is in
+   degrees.) Each sub-box becomes one Open Charge Map request (`boundingbox`,
+   `countrycode`, `maxresults=1000`). This turns an unpaginated API into many
+   smaller, bounded calls.
+3. For each response, existing documents are looked up by `serial` (the Open
+   Charge Map id). A record is queued only if it is new, or if its
+   `dateLastStatusUpdate` is newer than the stored one.
+4. Queued records are written with a single `bulkWrite` of `updateOne` +
+   `upsert` operations for that sub-box.
+5. This runs once at start-up and then daily at 00:01 (`node-cron`).
+
+**Serving (gateway + subgraph)**
+
+- The socket subgraph publishes a Federation 2 schema (`buildSubgraphSchema`)
+  with two queries: `socket(identifier)` and `sockets(first, after, last,
+  before)`.
+- `sockets` returns a relay connection (`edges`, `cursor`, `pageInfo`,
+  `totalCount`). The cursor is the document `_id`, the order is `_id`
+  ascending, and page size is clamped to 1–100.
+- Each station also carries a `uuid` (Mongoose `UUID` type, unique index).
+- The gateway composes the supergraph at start-up by introspecting the
+  subgraphs (`IntrospectAndCompose`) and exposes one GraphQL endpoint.
+
+More detail, including the alternatives considered: [SOLUTION.md](./SOLUTION.md).
+
+## Trade-offs
+
+| Decision | Why | Cost / what would change at scale |
+| --- | --- | --- |
+| **Pre-fetch the world in bounding-box cells** instead of calling Open Charge Map per user request | Queries never depend on an external API being up; coverage doesn't depend on where users happen to be | Data is up to a day stale; the grid makes many requests even over empty areas (sea, desert) |
+| **Change detection on `dateLastStatusUpdate`** | One indexed lookup per batch; no deep diff of nested documents | An upstream edit that doesn't bump that timestamp is missed. A content hash per record would be stricter |
+| **Sequential requests, one `bulkWrite` per cell** | Gentle on a free public API; each write is bounded and idempotent (upsert by `serial`) | A full sync is slow. There is no retry/back-off yet; a failed cell is logged and picked up on the next run |
+| **Fixed 1° × 1° cells** | A simple, deterministic grid: on the order of a thousand calls cover both countries | A dense cell (a German metro area, say) can exceed `maxresults=1000`, and the excess is silently dropped. Adaptive splitting (split any cell that returns the cap) or smaller cells would fix this |
+| **`IntrospectAndCompose` at the gateway** | Zero extra infrastructure for a single subgraph | It isn't meant for production: a subgraph that starts late breaks composition. Production would use a pre-composed supergraph (Rover) or a schema registry |
+| **`_id` as the pagination cursor** | Stable and indexed, so no offset scans | Cursors are opaque but not encoded. `totalCount` counts the remaining window after the cursor, not the whole collection |
+| **One subgraph today** | Federation is in place so new domains (operators, pricing, availability) can be added as separate subgraphs without touching clients | Federation adds a hop and a gateway to run, which is overhead for one domain |
+| **Apollo Server 3, Node 18** | Current when this was written (June 2023) | Both are now end-of-life |
 
 ## Initial setup
 
@@ -78,6 +138,8 @@ A [NodeJs] / [TypeScript] application boilerplate with Federated 2 [GraphQL].
     ```bash
     npm test
     ```
+
+4.  CI ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) runs on every push and pull request. One job checks Prettier and ESLint and type-checks both services. The other starts the same Docker test stack (seeded MongoDB, subgraph, gateway) and runs Jest with coverage, then uploads the coverage report as an artifact. The workflow token is read-only.
 
 ## API Documentation
 
@@ -155,6 +217,9 @@ A [NodeJs] / [TypeScript] application boilerplate with Federated 2 [GraphQL].
 ## Folder Structure
 
         📦nodejs-typescript-federated-graphql-boilerplate
+        ┣ 📂.github
+        ┃ ┗ 📂workflows
+        ┃ ┃ ┗ 📜ci.yml
         ┣ 📂.husky
         ┃ ┣ 📂_
         ┃ ┃ ┣ 📜.gitignore
@@ -283,7 +348,7 @@ A [NodeJs] / [TypeScript] application boilerplate with Federated 2 [GraphQL].
 
 ## License
 
--   AGPL-3.0-or-later
+-   [GPL-3.0-or-later](./LICENSE)
 
 ## Meet The Maker
 
