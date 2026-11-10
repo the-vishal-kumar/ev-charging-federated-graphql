@@ -15,14 +15,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/the-vishal-kumar/nodejs-typescript-federated-graphql-boilerplate.git"
+    "url": "git+https://github.com/the-vishal-kumar/ev-charging-federated-graphql.git"
   },
   "author": "Vishal Kumar <vishal194kumar@gmail.com>",
   "license": "GPL-3.0-or-later",
   "bugs": {
-    "url": "https://github.com/the-vishal-kumar/nodejs-typescript-federated-graphql-boilerplate/issues"
+    "url": "https://github.com/the-vishal-kumar/ev-charging-federated-graphql/issues"
   },
-  "homepage": "https://github.com/the-vishal-kumar/nodejs-typescript-federated-graphql-boilerplate#readme",
+  "homepage": "https://github.com/the-vishal-kumar/ev-charging-federated-graphql#readme",
   "engines": {
     "npm": "9",
     "node": "18"

@@ -1,4 +1,4 @@
-# nodejs-typescript-federated-graphql-boilerplate
+# ev-charging-federated-graphql
 
 ## Solution
 

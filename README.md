@@ -1,6 +1,6 @@
 # EV Charging Federated GraphQL
 
-[![CI](https://github.com/the-vishal-kumar/nodejs-typescript-federated-graphql-boilerplate/actions/workflows/ci.yml/badge.svg)](./.github/workflows/ci.yml)
+[![CI](https://github.com/the-vishal-kumar/ev-charging-federated-graphql/actions/workflows/ci.yml/badge.svg)](./.github/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](./LICENSE)
 
 An ingestion service and a federated GraphQL API for EV charging stations. It
@@ -95,7 +95,7 @@ More detail, including the alternatives considered: [SOLUTION.md](./SOLUTION.md)
 1.  Clone from GitHub
 
     ```bash
-    git clone https://github.com/the-vishal-kumar/nodejs-typescript-federated-graphql-boilerplate.git
+    git clone https://github.com/the-vishal-kumar/ev-charging-federated-graphql.git
     ```
 
 1.  Setup [Docker] and [Docker-Compose]
@@ -106,7 +106,7 @@ More detail, including the alternatives considered: [SOLUTION.md](./SOLUTION.md)
 1.  Install dependencies using npm
 
     ```bash
-    cd nodejs-typescript-federated-graphql-boilerplate
+    cd ev-charging-federated-graphql
     npm i
     ```
 
@@ -216,7 +216,7 @@ More detail, including the alternatives considered: [SOLUTION.md](./SOLUTION.md)
 
 ## Folder Structure
 
-        📦nodejs-typescript-federated-graphql-boilerplate
+        📦ev-charging-federated-graphql
         ┣ 📂.github
         ┃ ┗ 📂workflows
         ┃ ┃ ┗ 📜ci.yml
