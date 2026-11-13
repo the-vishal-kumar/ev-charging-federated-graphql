@@ -1,0 +1,54 @@
+# Local stack: make up (or: cp .env.sample .env && docker compose up --build -d --wait)
+name: ev-charging
+
+x-service: &service
+  env_file: .env
+  restart: unless-stopped
+  stop_grace_period: 15s
+
+services:
+  gateway:
+    <<: *service
+    build:
+      context: .
+      target: gateway
+    image: ev-charging-gateway:local
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 4000
+      SOCKET_SUBGRAPH_URL: http://socket:4001/
+      NEW_RELIC_APP_NAME: ${NEW_RELIC_APP_NAME:-ev-charging-federated-graphql}-gateway
+    ports:
+      - '${GATEWAY_PORT:-4000}:4000'
+    depends_on:
+      socket:
+        condition: service_healthy
+
+  socket:
+    <<: *service
+    build:
+      context: .
+      target: socket
+    image: ev-charging-socket:local
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 4001
+      MONGO_URI: mongodb://mongo:27017/ev_charging
+      NEW_RELIC_APP_NAME: ${NEW_RELIC_APP_NAME:-ev-charging-federated-graphql}-socket
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  mongo:
+    image: mongo:8.2
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', 'db.runCommand({ ping: 1 }).ok']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
