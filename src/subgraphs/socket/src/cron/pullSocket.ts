@@ -1,133 +1,138 @@
-import fs from 'node:fs';
-import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
-import { Socket } from '../model';
-import { ISocketDocument, IISOCode, ICountryBoundingBox } from '../type';
-import {
-  generateCountriesJson,
-  generateSubBoundingBoxesOfCountry,
-  Logger,
-  readInputFileAndReturnContent,
-  writeOutputFile,
-} from '../util';
+import { Socket, toSocketFields, decideWrite, IOcmPoi } from '../model';
+import { IISOCode } from '../type';
+import { generateSubBoundingBoxesOfCountry, Logger, parseCountries, readInputFileAndReturnContent } from '../util';
 
-const countriesJsonPath = path.join(__dirname, '..', 'config', 'countries.json');
-const openChargeMapApiKey = String(process.env.OPEN_CHARGE_MAP_API_KEY);
+export interface SyncOptions {
+  apiKey?: string;
+  baseUrl?: string;
+  countries?: IISOCode[];
+  signal?: AbortSignal;
+}
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const fetchSocketsData = async (uri: string): Promise<any> => {
-  const response = await fetch(uri, {
+export interface SyncSummary {
+  requests: number;
+  fetched: number;
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  failedRequests: number;
+}
+
+const DEFAULT_BASE_URL = 'https://api.openchargemap.io/v3';
+const USER_AGENT = 'ev-charging-federated-graphql';
+
+const emptySummary = (): SyncSummary => ({
+  requests: 0,
+  fetched: 0,
+  inserted: 0,
+  updated: 0,
+  unchanged: 0,
+  failedRequests: 0,
+});
+
+const buildUrl = (baseUrl: string, countryIsoCode: string, subBoundingBox: [number, number][]): string => {
+  const [topLeftLongitude, topLeftLatitude] = subBoundingBox[0];
+  const [bottomRightLongitude, bottomRightLatitude] = subBoundingBox[1];
+  const query =
+    `camelcase=true&distanceunit=km&maxresults=1000&countrycode=${countryIsoCode}` +
+    `&boundingbox=(${topLeftLatitude},${topLeftLongitude}),(${bottomRightLatitude},${bottomRightLongitude})`;
+  return `${baseUrl.replace(/\/+$/, '')}/poi?${query}`;
+};
+
+const fetchPois = async (url: string, apiKey: string, signal?: AbortSignal): Promise<IOcmPoi[]> => {
+  const response = await fetch(url, {
     method: 'GET',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { Accept: 'application/json', 'X-API-Key': apiKey, 'User-Agent': USER_AGENT },
+    signal,
   });
-  return response.json();
+  if (!response.ok) throw new Error(`Open Charge Map responded with HTTP ${response.status}`);
+  const body: unknown = await response.json();
+  if (!Array.isArray(body)) throw new Error('Open Charge Map returned an unexpected payload');
+  return body as IOcmPoi[];
 };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const getSocketsToBeUpserted = async (fetchedSockets: any[]): Promise<ISocketDocument[]> => {
-  const fetchedSocketsIDs: string[] = fetchedSockets.map(fetchedSocket => fetchedSocket?.id);
-  const alreadyExistingSockets = await Socket.find(
-    { serial: { $in: fetchedSocketsIDs } },
-    { serial: 1, dateLastStatusUpdate: 1 },
-  );
+const upsertPois = async (pois: IOcmPoi[], summary: SyncSummary): Promise<void> => {
+  const bySerial = new Map<number, IOcmPoi>();
+  for (const poi of pois) {
+    const serial = Number(poi?.id);
+    if (Number.isFinite(serial)) bySerial.set(serial, poi);
+  }
+  summary.fetched += bySerial.size;
+  if (bySerial.size === 0) return;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const socketsToBeUpserted: any[] = [];
-  fetchedSockets.forEach(fetchedSocket => {
-    let exisitngSocket = alreadyExistingSockets.find(existingSocket => {
-      const eSocket = existingSocket.toObject();
-      return eSocket.serial === fetchedSocket.id;
-    });
-    if (exisitngSocket) {
-      exisitngSocket = exisitngSocket.toObject();
-      const fetchedSocketLastUpdated = Math.floor(new Date(fetchedSocket.dateLastStatusUpdate).valueOf() / 1000);
-      const savedSocketLastUpdated = Math.floor(new Date(exisitngSocket.dateLastStatusUpdate).valueOf() / 1000);
+  const existing = await Socket.find({ serial: { $in: [...bySerial.keys()] } }, { serial: 1, dateLastStatusUpdate: 1 })
+    .lean<{ serial: number; dateLastStatusUpdate?: Date }[]>()
+    .exec();
+  const stored = new Map(existing.map(doc => [doc.serial, doc]));
 
-      const isFetchedDataUpdated = fetchedSocketLastUpdated > savedSocketLastUpdated;
-      if (isFetchedDataUpdated) socketsToBeUpserted.push(Socket.build(fetchedSocket, exisitngSocket.id));
-    } else {
-      socketsToBeUpserted.push(Socket.build(fetchedSocket));
-    }
-  });
+  const operations = [...bySerial.entries()]
+    .filter(([serial, poi]) => decideWrite(stored.get(serial), poi.dateLastStatusUpdate) !== 'skip')
+    .map(([serial, poi]) => ({
+      updateOne: {
+        filter: { serial },
+        update: { $set: toSocketFields(poi), $setOnInsert: { uuid: randomUUID() } },
+        upsert: true,
+      },
+    }));
 
-  return socketsToBeUpserted;
+  let inserted = 0;
+  let updated = 0;
+  if (operations.length > 0) {
+    const result = await Socket.bulkWrite(operations, { ordered: false });
+    inserted = result.upsertedCount;
+    updated = result.modifiedCount;
+  }
+  summary.inserted += inserted;
+  summary.updated += updated;
+  summary.unchanged += bySerial.size - inserted - updated;
 };
 
-const pullSocket = async (): Promise<void> => {
+const pullSocket = async (options: SyncOptions = {}): Promise<SyncSummary> => {
+  const summary = emptySummary();
+  const { apiKey, signal } = options;
+
+  if (!apiKey) {
+    Logger.warn('Unable to pull sockets: Open Charge Map API key is not set');
+    return summary;
+  }
+
   Logger.info('Socket polling initiated...');
-  try {
-    if (!openChargeMapApiKey) throw new Error('Unable to pull sockets. Missing license');
+  const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
+  const countries = options.countries ?? Object.values(IISOCode);
+  const countriesData = parseCountries(readInputFileAndReturnContent());
 
-    let countriesData;
-    try {
-      countriesData = fs.readFileSync(countriesJsonPath, 'utf8');
-    } catch (err) {
-      Logger.error('CountriesJson not found:- ', err);
-
-      const content = readInputFileAndReturnContent();
-      const countriesJSON = generateCountriesJson(content);
-      writeOutputFile(countriesJSON);
-
-      countriesData = fs.readFileSync(countriesJsonPath, 'utf8');
+  for (const countryIsoCode of countries) {
+    const country = countriesData[countryIsoCode];
+    if (!country) {
+      Logger.error(`No bounding box known for country ${countryIsoCode}`);
+      continue;
     }
-
-    const countriesJson = JSON.parse(countriesData);
-    const enabledCountries = Object.values(IISOCode);
-
-    const subBoundingBoxesOfCountries = enabledCountries.flatMap(countryIsoCode => {
-      const countryData: ICountryBoundingBox = countriesJson[countryIsoCode];
-      const generatedSubBoundingBoxes = generateSubBoundingBoxesOfCountry(countryData.topLeft, countryData.bottomRight);
-
-      return generatedSubBoundingBoxes.map(subBoundingBox => {
-        const [topLeftLongitude, topLeftLatitude] = subBoundingBox[0];
-        const [bottomRightLongitude, bottomRightLatitude] = subBoundingBox[1];
-
-        let uri = `https://api.openchargemap.io/v3/poi?key=${openChargeMapApiKey}&camelcase=true&distanceunit=km&maxresults=1000`;
-        uri += `&countrycode=${countryIsoCode}&boundingbox=(${topLeftLatitude},${topLeftLongitude}),(${bottomRightLatitude},${bottomRightLongitude})`;
-
-        return {
-          countryIsoCode,
-          subBoundingBox,
-          uri,
-        };
-      });
-    });
-
-    for (let subBoundingBoxIndex = 0; subBoundingBoxIndex < subBoundingBoxesOfCountries.length; subBoundingBoxIndex++) {
-      const { countryIsoCode, subBoundingBox, uri } = subBoundingBoxesOfCountries[subBoundingBoxIndex];
-      const fetchedSockets = await fetchSocketsData(uri);
-      const sockets: ISocketDocument[] = await getSocketsToBeUpserted(fetchedSockets);
+    for (const subBoundingBox of generateSubBoundingBoxesOfCountry(country.topLeft, country.bottomRight)) {
+      if (signal?.aborted) {
+        Logger.info('Socket polling aborted');
+        return summary;
+      }
+      summary.requests++;
       try {
-        const upsertionResult = await Socket.bulkWrite(
-          sockets.map(socket => {
-            return {
-              updateOne: {
-                filter: { serial: socket.serial },
-                update: { $set: socket },
-                upsert: true,
-              },
-            };
-          }),
-        );
-        Logger.info(
-          `${subBoundingBoxIndex} Upsertion done:- ${JSON.stringify({
-            countryIsoCode,
-            subBoundingBox,
-            upsertionResult,
-          })}`,
-        );
+        const pois = await fetchPois(buildUrl(baseUrl, countryIsoCode, subBoundingBox), apiKey, signal);
+        await upsertPois(pois, summary);
       } catch (err) {
+        if (signal?.aborted) {
+          Logger.info('Socket polling aborted');
+          return summary;
+        }
+        summary.failedRequests++;
         Logger.error(
-          `${subBoundingBoxIndex} Upsertion failed:- ${JSON.stringify({ countryIsoCode, subBoundingBox, err })}`,
+          `Request ${summary.requests} failed (${countryIsoCode}):- ${err instanceof Error ? err.message : String(err)}`,
         );
-        Logger.error(`${subBoundingBoxIndex} fetchedSockets ${JSON.stringify(fetchedSockets)}`);
-        Logger.error(`${subBoundingBoxIndex} sockets ${JSON.stringify(sockets)}`);
       }
     }
-  } catch (err) {
-    Logger.error('Error occured pulling sockets:- ', err);
   }
-  Logger.info('Socket polling finished...');
+
+  Logger.info(`Socket polling finished: ${JSON.stringify(summary)}`);
+  return summary;
 };
 
 export default pullSocket;

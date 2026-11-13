@@ -1,17 +1,23 @@
 {
-  "name": "@ntfgb/supergraph",
-  "version": "1.0.0",
-  "description": "",
+  "name": "ev-charging-federated-graphql",
+  "version": "2.0.0",
+  "private": true,
+  "description": "EV charging stations from Open Charge Map, synced into MongoDB with change detection and served through an Apollo Federation 2 gateway with relay-style pagination.",
+  "workspaces": [
+    "src/gateway",
+    "src/subgraphs/socket"
+  ],
   "scripts": {
-    "build": "npx tsc",
-    "start": "docker-compose --env-file .env up --build --force-recreate",
-    "test": "docker-compose -f docker-compose.test.yml --env-file .env.test up --build --force-recreate -d && jest --coverage && docker-compose -f docker-compose.test.yml down",
-    "generate:countries:json": "npx ts-node src/subgraphs/socket/src/util/generateCountriesJson.ts",
-    "generate:sub:bounding:box": "npx ts-node src/subgraphs/socket/src/util/generateSubBoundingBoxesOfCountry.ts",
-    "pretty": "cross-os pretty",
-    "pretty:check": "cross-os pretty:check",
-    "lint": "cross-os lint",
-    "prepare": "husky install"
+    "build": "npm run build --workspaces",
+    "typecheck": "tsc --noEmit",
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest --coverage",
+    "test:unit": "NODE_OPTIONS=--experimental-vm-modules jest --selectProjects unit",
+    "test:e2e": "NODE_OPTIONS=--experimental-vm-modules jest --selectProjects e2e",
+    "pretty": "prettier --write \"{src,test}/**/*.ts\"",
+    "pretty:check": "prettier --check \"{src,test}/**/*.ts\"",
+    "lint": "eslint \"{src,test}/**/*.ts\"",
+    "generate:countries:json": "npm run generate:countries:json -w @ev-charging/socket-subgraph",
+    "prepare": "husky || true"
   },
   "repository": {
     "type": "git",
@@ -24,40 +30,25 @@
   },
   "homepage": "https://github.com/the-vishal-kumar/ev-charging-federated-graphql#readme",
   "engines": {
-    "npm": "9",
-    "node": "18"
+    "npm": ">=10",
+    "node": ">=22"
   },
   "devDependencies": {
-    "@commitlint/cli": "^17.6.5",
-    "@commitlint/config-conventional": "^17.6.5",
-    "@typescript-eslint/eslint-plugin": "^5.59.11",
-    "@typescript-eslint/parser": "^5.59.11",
-    "cross-os": "^1.5.0",
-    "eslint": "^8.43.0",
-    "eslint-config-prettier": "^8.8.0",
-    "eslint-plugin-prettier": "^4.2.1",
-    "husky": "^8.0.3",
-    "prettier": "^2.8.8"
+    "@commitlint/cli": "^21.2.4",
+    "@commitlint/config-conventional": "^21.2.4",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.20.5",
+    "eslint": "^10.14.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.7",
+    "husky": "^9.1.7",
+    "jest": "^30.5.2",
+    "prettier": "^3.10.1",
+    "ts-jest": "^29.4.15",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.72.2"
   },
-  "cross-os": {
-    "pretty": {
-      "darwin": "prettier --write 'src/**/*.ts'",
-      "linux": "prettier --write 'src/**/*.ts'",
-      "win32": "prettier --write src/**/*.ts"
-    },
-    "pretty:check": {
-      "darwin": "prettier --check 'src/**/*.ts'",
-      "linux": "prettier --check 'src/**/*.ts'",
-      "win32": "prettier --check src/**/*.ts"
-    },
-    "lint": {
-      "darwin": "eslint 'src/**/*.ts'",
-      "linux": "eslint 'src/**/*.ts'",
-      "win32": "eslint src/**/*.ts"
-    }
-  },
-  "workspaces": [
-    "./src/*",
-    "./src/*/*"
-  ]
+  "overrides": {
+    "@graphql-tools/utils": "^12.1.0"
+  }
 }

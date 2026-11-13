@@ -1,4 +1,4 @@
-extend schema @link(url: "https://specs.apollo.dev/federation/v2.0", import: ["@key", "@shareable"])
+extend schema @link(url: "https://specs.apollo.dev/federation/v2.5", import: ["@key"])
 
 scalar Date
 
@@ -269,11 +269,11 @@ type Connection {
 #   coordinates: [Float]
 # }
 
-type Socket {
-  identifier: String # _id of saved document
+type Socket @key(fields: "identifier") {
+  identifier: ID! # _id of saved document
   # id: Int
   serial: Int # id of input object being saved
-  uuid: String
+  uuid: String!
   operatorInfo: OperatorInfo
   statusType: StatusType
   addressInfo: AddressInfo

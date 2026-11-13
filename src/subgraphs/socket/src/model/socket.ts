@@ -82,15 +82,18 @@ export const CurrentTypeTitle = Enum({
   Dc: 'DC',
 });
 
-const pointSchema = new Schema({
-  type: {
-    type: Schema.Types.String,
-    enum: ['Point'],
+const pointSchema = new Schema(
+  {
+    type: {
+      type: Schema.Types.String,
+      enum: ['Point'],
+    },
+    coordinates: {
+      type: [Schema.Types.Number],
+    },
   },
-  coordinates: {
-    type: [Schema.Types.Number],
-  },
-});
+  { _id: false },
+);
 
 const socketSchema = new Schema(
   {
@@ -386,17 +389,6 @@ const socketSchema = new Schema(
 );
 
 socketSchema.set('toObject', { getters: true });
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-socketSchema.statics.build = (attribute: any, id?: string): any => {
-  const item = {
-    ...attribute,
-    serial: Number(attribute.id),
-    location: { type: 'Point', coordinates: [attribute.addressInfo.longitude, attribute.addressInfo.latitude] },
-  };
-  if (id) item._id = id;
-  delete item.id;
-  return item;
-};
 
 const Socket = model<ISocketDocument, ISocketModel>('Socket', socketSchema);
 

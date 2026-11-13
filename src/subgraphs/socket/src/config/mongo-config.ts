@@ -1,7 +1,6 @@
 export default {
   dbOptions: {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-    connectTimeoutMS: 1000,
+    serverSelectionTimeoutMS: 10000,
+    connectTimeoutMS: 10000,
   },
 };

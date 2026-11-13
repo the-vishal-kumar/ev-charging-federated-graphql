@@ -1,8 +1,8 @@
-import { ISocketDocument } from '../../model/socket';
+import { ISocketNode } from '../../model/socket';
 
 export interface ISocketEdge {
   cursor: string;
-  node: ISocketDocument;
+  node: ISocketNode;
 }
 
 export interface IPageInfo {

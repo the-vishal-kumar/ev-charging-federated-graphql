@@ -8,6 +8,8 @@ const logFormatter = format.printf(info => {
 
 export const config = {
   level: 'info',
+  // Keep test output readable; assertions don't depend on log lines.
+  silent: process.env.NODE_ENV === 'test',
   format: format.errors({ stack: true }),
   transports: [
     new transports.Console({

@@ -1,10 +1,19 @@
-import { Document, Model } from 'mongoose';
+import { Document, Model, Types } from 'mongoose';
 
 export interface ISocketDocument extends ISocket, Document {}
 
-export interface ISocketModel extends Model<ISocketDocument> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  build(attr: any, id?: string): any;
+export type ISocketModel = Model<ISocketDocument>;
+
+/** A document as returned by `.lean()`: uuid is a bson UUID, not a string. */
+export interface ISocketLean extends Omit<ISocket, 'uuid'> {
+  _id: Types.ObjectId;
+  uuid: unknown;
+}
+
+/** The shape handed to GraphQL field resolvers. */
+export interface ISocketNode extends Omit<ISocket, 'uuid' | 'location'> {
+  identifier: string;
+  uuid: string;
 }
 
 export interface IPoint {

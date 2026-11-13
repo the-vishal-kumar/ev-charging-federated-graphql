@@ -13,15 +13,18 @@ export const writeOutputFile = (countriesJSON: string): void => {
   fs.writeFileSync(outputFilePath, countriesJSON);
 };
 
-export const generateCountriesJson = (fileContent: string): string => {
+export type CountriesMap = Record<
+  string,
+  {
+    name: string;
+    topLeft: [number, number];
+    bottomRight: [number, number];
+  }
+>;
+
+export const parseCountries = (fileContent: string): CountriesMap => {
   const lines = fileContent.split('\n');
-  const countries: {
-    [key: string]: {
-      name: string;
-      topLeft: [number, number];
-      bottomRight: [number, number];
-    };
-  } = {};
+  const countries: CountriesMap = {};
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
@@ -50,15 +53,17 @@ export const generateCountriesJson = (fileContent: string): string => {
     };
   }
 
-  return JSON.stringify(countries, null, 2);
+  return countries;
 };
 
-((): void => {
+export const generateCountriesJson = (fileContent: string): string =>
+  JSON.stringify(parseCountries(fileContent), null, 2);
+
+if (require.main === module) {
   try {
-    const content = readInputFileAndReturnContent();
-    const countriesJSON = generateCountriesJson(content);
-    writeOutputFile(countriesJSON);
+    writeOutputFile(generateCountriesJson(readInputFileAndReturnContent()));
   } catch (err) {
     Logger.error('Error generating countries JSON:- ', err);
+    process.exitCode = 1;
   }
-})();
+}

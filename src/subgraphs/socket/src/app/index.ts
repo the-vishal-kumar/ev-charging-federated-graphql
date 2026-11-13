@@ -1,4 +1,4 @@
-import MongoAppInit from './mongo-server';
-import NodeAppInit from './node-server';
+import { connectMongo, disconnectMongo } from './mongo-server';
+import { createSubgraphServer, startSubgraphServer } from './node-server';
 
-export { MongoAppInit, NodeAppInit };
+export { connectMongo, disconnectMongo, createSubgraphServer, startSubgraphServer };

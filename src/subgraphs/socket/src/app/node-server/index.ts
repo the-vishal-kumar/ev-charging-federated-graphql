@@ -1,38 +1,37 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ApolloServer, gql } from 'apollo-server';
-import { buildSubgraphSchema } from '@apollo/subgraph';
-import { GraphQLError } from 'graphql';
+import { ApolloServer } from '@apollo/server';
+import { startStandaloneServer } from '@apollo/server/standalone';
+import { buildSubgraphSchema, type GraphQLResolverMap } from '@apollo/subgraph';
+import type { GraphQLFormattedError } from 'graphql';
+import { gql } from 'graphql-tag';
 import { Logger } from '../../util';
 import { resolvers } from '../../resolver';
 
 const schemaPath = join(__dirname, 'schema.graphql');
 
-const buildSocketSubgraph = async (port: number): Promise<void> => {
-  const gqlContent = readFileSync(schemaPath, { encoding: 'utf-8' });
-  const typeDefs = gql(gqlContent);
-  const schema = buildSubgraphSchema({ typeDefs, resolvers });
+export const createSubgraphServer = (): ApolloServer => {
+  const typeDefs = gql(readFileSync(schemaPath, { encoding: 'utf-8' }));
+  const schema = buildSubgraphSchema([
+    {
+      typeDefs,
+      resolvers: resolvers as unknown as GraphQLResolverMap<unknown>,
+    },
+  ]);
 
-  const server = new ApolloServer({
+  return new ApolloServer({
     schema,
-    introspection: process.env.ENVIRONMENT !== 'production',
-    formatError: (error): GraphQLError => {
-      Logger.error('[Socket Subgraph Error]:', error);
-      return error;
+    introspection: process.env.NODE_ENV !== 'production',
+    stopOnTerminationSignals: false,
+    formatError: (formattedError, error): GraphQLFormattedError => {
+      Logger.error(`[Socket Subgraph Error]: ${String(error)}`);
+      return formattedError;
     },
   });
-  const { url } = await server.listen(port);
-  Logger.info(`🚀Socket Subgraph running ${url}`);
 };
 
-const init = async (): Promise<void> => {
-  const socketSubgraphPort = Number(process.env.SOCKET_SUBGRAPH_PORT);
-  try {
-    if (!socketSubgraphPort) throw new Error('Socket subgraph port undefined');
-    await buildSocketSubgraph(socketSubgraphPort);
-  } catch (error) {
-    Logger.error('Unable to spin up Socket Subgraph:- ', error);
-  }
+export const startSubgraphServer = async (server: ApolloServer, port: number): Promise<string> => {
+  const { url } = await startStandaloneServer(server, { listen: { port } });
+  Logger.info(`Socket Subgraph running ${url}`);
+  return url;
 };
-
-export default init;

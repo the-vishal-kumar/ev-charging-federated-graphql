@@ -22,7 +22,7 @@ const Enum = <T extends EnumType<T>>(baseEnum: T): Readonly<EnumType<T> & { Null
   };
 
   return new Proxy(enumWithNull, {
-    get: (_, name): EnumType<T> => {
+    get: (_, name): unknown => {
       const propName = name.toString() as keyof T;
       if (!enumWithNull.hasOwnProperty(propName)) {
         throw new Error(`"${propName.toString()}" value does not exist in the enum`);

@@ -1,45 +1,34 @@
-import 'newrelic';
+// The agent must load before any other module; it is enabled only when a licence key is configured.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+if (process.env.NEW_RELIC_LICENSE_KEY) require('newrelic');
 
-import { ApolloServer } from 'apollo-server';
-import { ApolloGateway, IntrospectAndCompose } from '@apollo/gateway';
-import { ApolloServerPluginLandingPageLocalDefault } from 'apollo-server-core';
-import { GraphQLError } from 'graphql';
+import { createGatewayServer, startGatewayServer } from './app';
+import { loadConfig } from './config';
 import { Logger } from './util';
 
-const buildGateway = async (port: number): Promise<void> => {
-  const nodeEnv = String(process.env.NODE_ENV);
-  if (!nodeEnv) throw new Error('Node environment undefined');
-  const socketSubgraphName = nodeEnv !== 'test' ? 'socket' : 'socket_test';
-  const gateway = new ApolloGateway({
-    debug: true,
-    supergraphSdl: new IntrospectAndCompose({
-      subgraphs: [
-        {
-          name: socketSubgraphName,
-          url: `http://${socketSubgraphName}:${Number(process.env.SOCKET_SUBGRAPH_PORT)}/graphql`,
-        },
-      ],
-    }),
-  });
+const main = async (): Promise<void> => {
+  const config = loadConfig();
+  const server = createGatewayServer(config.subgraphs);
+  await startGatewayServer(server, config.port);
 
-  const server = new ApolloServer({
-    gateway,
-    plugins: [ApolloServerPluginLandingPageLocalDefault({ embed: true })],
-    formatError: (error): GraphQLError => {
-      Logger.error('[Gateway Error]:', error);
-      return error;
-    },
-  });
-  const { url } = await server.listen(port);
-  Logger.info(`🚀Gateway running ${url}`);
+  let shuttingDown = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    Logger.info(`${signal} received, shutting down`);
+    try {
+      await server.stop();
+      process.exit(0);
+    } catch (err) {
+      Logger.error('Error during shutdown:- ', err);
+      process.exit(1);
+    }
+  };
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
 };
 
-void (async (): Promise<void> => {
-  const gatewayPort = Number(process.env.GATEWAY_PORT);
-  try {
-    if (!gatewayPort) throw new Error('Gateway port undefined');
-    await buildGateway(gatewayPort);
-  } catch (error) {
-    Logger.error('Unable to spin up Gateway:- ', error);
-  }
-})();
+main().catch((err: unknown) => {
+  Logger.error('Gateway failed to start:- ', err);
+  process.exit(1);
+});
