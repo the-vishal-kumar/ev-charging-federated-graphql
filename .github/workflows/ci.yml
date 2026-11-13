@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -15,19 +15,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Format, lint & type-check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+  test:
+    name: Lint, type-check, test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
 
-      - uses: actions/setup-node@v4
+    services:
+      mongo:
+        image: mongo:8.2
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
         with:
-          # Matches the node:18-slim images and the "engines" field.
-          node-version: 18
+          node-version-file: .nvmrc
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Prettier
         run: npm run pretty:check
@@ -35,64 +50,81 @@ jobs:
       - name: ESLint
         run: npm run lint
 
-      - name: Type-check gateway
-        working-directory: src/gateway
-        run: npx --no-install tsc --noEmit
+      - name: Type-check
+        run: npm run typecheck
 
-      - name: Type-check socket subgraph
-        working-directory: src/subgraphs/socket
-        run: npx --no-install tsc --noEmit
+      - name: Build both services
+        run: npm run build
 
-  test:
-    name: Unit & end-to-end tests
-    runs-on: ubuntu-latest
-    needs: lint
-    env:
-      COMPOSE: docker compose -f docker-compose.test.yml --env-file .env.test
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 18
-          cache: npm
-
-      - run: npm ci
-
-      # Same stack as `npm test`: seeded MongoDB, socket subgraph and gateway,
-      # each built from its own Dockerfile. No Open Charge Map key is needed;
-      # e2e tests read the seed data through the gateway on :5000.
-      - name: Start test stack
-        run: $COMPOSE up --build -d
-
-      - name: Wait for the gateway
-        run: |
-          for i in $(seq 1 60); do
-            if curl -fsS -o /dev/null -X POST -H 'Content-Type: application/json' \
-                 --data '{"query":"{__typename}"}' http://localhost:5000; then
-              echo "Gateway ready after ${i} attempt(s)"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "Gateway did not become ready"
-          exit 1
-
-      - name: Jest with coverage
-        run: npx --no-install jest --coverage
+      # e2e suites run the subgraph and the gateway in-process against the
+      # Mongo service; Open Charge Map is stubbed, so no API key is needed.
+      - name: Unit and e2e tests with coverage
+        env:
+          MONGO_URI: mongodb://localhost:27017/ev_charging_test
+          # Lets Jest's sandbox run the MongoDB driver's dynamic import('os').
+          NODE_OPTIONS: --experimental-vm-modules
+        run: npx jest --coverage --ci
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: coverage/
           if-no-files-found: ignore
 
-      - name: Service logs on failure
-        if: failure()
-        run: $COMPOSE logs --no-color
+  image:
+    name: Docker images, smoke test, CVE scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: test
+    steps:
+      - uses: actions/checkout@v7
 
-      - name: Stop test stack
+      - name: Build images
+        run: docker compose build
+
+      - name: Start stack and wait for health checks
+        run: |
+          cp .env.sample .env
+          docker compose up -d --wait --wait-timeout 180
+
+      - name: Smoke test through the gateway
+        run: |
+          gql() {
+            curl -fsS http://localhost:4000/ -H 'Content-Type: application/json' -d "{\"query\":\"$1\"}"
+          }
+          make seed
+          gql '{ sockets { totalCount } }' | tee /dev/stderr | grep -q '"totalCount":11'
+          gql '{ sockets(first: 1) { edges { cursor node { identifier uuid serial } } } }' | tee /dev/stderr \
+            | grep -Eq '"uuid":"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"'
+
+      - name: Images run as non-root without npm
+        run: |
+          for service in gateway socket; do
+            test "$(docker compose exec -T $service id -u)" != "0"
+            if docker compose exec -T $service sh -c 'command -v npm || command -v npx || command -v yarn'; then
+              echo "$service image still ships a package manager"; exit 1
+            fi
+          done
+
+      - name: Graceful shutdown exits 0
+        run: |
+          docker compose stop -t 15 gateway socket
+          test "$(docker compose ps -a gateway --format '{{.ExitCode}}')" = "0"
+          test "$(docker compose ps -a socket --format '{{.ExitCode}}')" = "0"
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Trivy scan (fixable HIGH/CRITICAL fail the build)
+        run: |
+          for image in ev-charging-gateway:local ev-charging-socket:local; do
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.70.0 \
+              image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress "$image"
+          done
+
+      - name: Tear down
         if: always()
-        run: $COMPOSE down -v
+        run: docker compose down -v --remove-orphans
