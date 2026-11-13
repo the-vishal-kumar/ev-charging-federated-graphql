@@ -17,7 +17,7 @@
   "dependencies": {
     "@apollo/server": "^5.5.2",
     "@apollo/subgraph": "^2.16.0",
-    "graphql": "^16.11.0",
+    "graphql": "^17.1.0",
     "graphql-tag": "^2.12.6",
     "mongoose": "^9.12.1",
     "newrelic": "^14.12.0",
